@@ -1,17 +1,15 @@
 #!/usr/bin/env python2
 
 """
-AER 1217 - Lab 1
-Tausif Sharif, 2017
-"""
-
-"""ROS Node for controlling the ARDrone 2.0 using the ardrone_autonomy package.
+ROS Node for controlling the ARDrone 2.0 using the ardrone_autonomy package.
 
 This ROS node subscribes to the following topics:
 /vicon/ARDroneCarre/ARDroneCarre
 
 This ROS node publishes to the following topics:
-/cmd_vel
+/cmd_vel_RHC
+
+Tausif S., 2017
 
 """
 
@@ -40,10 +38,17 @@ class ROSControllerNode(object):
         """Initialize the ROSControllerNode class."""
 
         # Publishers
+        """
         self.pub_cmd_vel = rospy.Publisher('cmd_vel', 
                                             Twist,
                                             queue_size = 300)
+        """
+
+        self.pub_cmd_vel = rospy.Publisher('cmd_vel_RHC', 
+                                            Twist,
+                                            queue_size = 300)
         
+        self.pubTakePic  = rospy.Publisher('/ardrone/take_pic', String, queue_size=10)
 
         # Subscribers
         self.model_name = 'ARDroneCarre'
@@ -54,58 +59,60 @@ class ROSControllerNode(object):
 
         self.sub_des_pos = rospy.Subscriber('des_pos', String, self.update_desired_position)
 
-        # Initialize messages for publishing.
+        # Initialize messages for publishing
         self.cmd_vel_msg = Twist()
 
-        # Run the onboard controller at 200 Hz.
+        # Run the onboard controller at 200 Hz
         self.onboard_loop_frequency = 200.
         
-        # Initializing an instance of the position controller to pass/calculate data.
+        # Calling the position controller to pass the data
         self.pos_class = PositionController()
 
-        # Run this ROS node at the onboard loop frequency.
+        # Run this ROS node at the onboard loop frequency
         self.run_pub_cmd_vel = rospy.Timer(rospy.Duration(1. / 
             self.onboard_loop_frequency), self.update_roll_pitch_yaw)
 
-        # Placeholder to keep track of time for trajectory planning and differentiation.
         self.current_point = 1
         self.nonunix_time = 0
         self.dt = 0
 
-        # Keep track of time for differentiation and integration within the controller.
+        self.num_points_old = 3
+
+        self.pic_number = 1
+
+        # Keep time for differentiation and integration within the controller
         self.old_time = rospy.get_time()
+        self.start_time = rospy.get_time()
 
 
     def update_roll_pitch_yaw(self, event):
-        """Determine the roll/pitch angles, yaw/climb rates and publish these values."""
+        """Determine the motor speeds and and publishes these."""
         
-        # Determine the time step for differentiation.
+        # Determine the time step for differentiation and integration
         current_time = rospy.get_time()
         self.dt = current_time - self.old_time
         
-        # Get the next set of roll/pitch/yaw/climb commands from the position controller.
+        # Get the next set of postioning commands from the position controller
         new_controls = self.pos_class.update_position_controller(self.dt)
 
-        # Rearranging the data for ease.
+        # Rearranging the data for ease
         [new_roll, new_pitch, new_yaw_rate, new_climb_rate] = new_controls
         
-        # Setting up the new controls in the cmd_vel msg format.
+        # Setting the cmd_vel msg values to the desired ones
         self.cmd_vel_msg.linear.x = new_roll
         self.cmd_vel_msg.linear.y = new_pitch
         self.cmd_vel_msg.angular.z = new_yaw_rate
         self.cmd_vel_msg.linear.z = new_climb_rate
         
-        # Publish the new controls to the cmd_vel msg.
+
+        # Publish the motor commands for the ardrone plugin
         self.pub_cmd_vel.publish(self.cmd_vel_msg)
         
-        # Set the old time to the current for future time step calculations.
+        # Set the old time to the current for future time step calculations
         self.old_time = current_time
 
 
     def update_vicon_data(self, vicon_data_msg):
-        """Get the current gazebo position and attitude for the position controller."""
-        
-        # Update the quadrotor states as an instance of pos_class (postion controller).
         (self.pos_class.current_trans_x,
         self.pos_class.current_trans_y,
         self.pos_class.current_trans_z) = (vicon_data_msg.transform.translation.x,
@@ -122,38 +129,50 @@ class ROSControllerNode(object):
 
 
     def update_desired_position(self, pos_msg):
-        """Acquires the entire trajectory plan from the des_pos msg and controls the desired postions."""
-        
-        # Acquires the des_pos msg as a string and converts it to a 1D array.
         self.des_pos_msg = np.fromstring(pos_msg.data, dtype = float, sep = ' ')
 
-        # Finds the number of points in the trajectory.
         num_points = self.des_pos_msg.size/4
+        if num_points != self.num_points_old:
+            self.num_points_old = num_points
+            self.current_point = 1
 
-        # Reshapes the 1D msg array to a (num_points)x4 matrix where each row is a desired pose (x, y, z, yaw).
-        trajectory = np.reshape(self.des_pos_msg, (-1, num_points + 1))
+        trajectory = np.reshape(self.des_pos_msg, (-1, 4))
 
-        # Sets the "current" desired pose for the pos_class instance.
         self.pos_class.desired_x = trajectory[self.current_point - 1, 0]
         self.pos_class.desired_y = trajectory[self.current_point - 1, 1]
         self.pos_class.desired_z = trajectory[self.current_point - 1, 2]
         self.pos_class.desired_yaw = trajectory[self.current_point - 1, 3]
 
-        # Finding nonunix time to keep track of how many seconds each desired pose can get.
         self.nonunix_time += self.dt
 
-        # Each "current" pose has 30 seconds to hold its position with 20% error
-        # Once time is up, current_point is incremented to allow for the next point in the trajectory.
-        # Nonunix time is reset. 
-        if self.pos_class.desired_x_err <= 20 and self.pos_class.desired_y_err <= 20 and self.pos_class.desired_z_err <= 20:
-            if self.current_point < num_points and self.nonunix_time >= 30:
+        #---------------------------------------------------
+        # SCANNING PHASE.
+        #---------------------------------------------------
+        self.pubTakePic.publish("no")
+        #---------------------------------------------------
+
+        if (((self.pos_class.desired_x - 0.15) < self.pos_class.current_trans_x < (self.pos_class.desired_x + 0.15)) and
+            ((self.pos_class.desired_y - 0.15) < self.pos_class.current_trans_y < (self.pos_class.desired_y + 0.15)) and
+            ((self.pos_class.desired_z - 0.05) < self.pos_class.current_trans_z < (self.pos_class.desired_z + 0.05)) and
+            ((self.pos_class.desired_yaw - 0.25) < self.pos_class.current_yaw < (self.pos_class.desired_yaw + 0.25))):
+            if self.current_point < num_points and self.nonunix_time >= 0.01:
                 self.current_point += 1
                 self.nonunix_time = 0
 
+                #---------------------------------------------------
+                # SCANNING PHASE.
+                #---------------------------------------------------
+                
+                current_mission_time = int(self.start_time - (rospy.get_time()))
+                file_name = str(round(self.pic_number)) + "_t" + str(current_mission_time) + "_X" + str(round(self.pos_class.current_trans_x, 2)) + "_Y" + str(round(self.pos_class.current_trans_y, 2)) + "_Z" + str(round(self.pos_class.current_trans_z, 2)) + "_W" + str(round(self.pos_class.current_yaw, 2)) + ".jpg"
+                self.pic_number = self.pic_number + 1
+                self.pubTakePic.publish(file_name)
+                
+                #---------------------------------------------------
+
+
 
 if __name__ == '__main__':
-    """Initializing the ros_controller node and starting an instance of ROSControllerNode."""
-
     rospy.init_node('ros_controller')
     ROSControllerNode()
     rospy.spin()
