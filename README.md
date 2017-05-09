@@ -1,5 +1,5 @@
 # ARDrone-Controller
-ROS nodes to control the Parrot AR.Drone
+ROS nodes to control the Parrot AR.Drone. <br />
 Used for autonomous drone racing project.
 
 Phase 1: Drone scans and captures images of racing field. <br />
