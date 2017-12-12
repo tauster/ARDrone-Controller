@@ -1,10 +1,12 @@
-# ARDrone-Controller
+# ARDrone Controller
+#### _Position and Altitude Controller ROS nodes for the Parrot AR.Drone_
+
 ROS nodes to control the Parrot AR.Drone. <br />
 Used for autonomous drone racing project.
 
-Phase 1: Drone scans and captures images of racing field. <br />
-Image Processing: Filter images to isolate race track and produce trajectory poses. <br />
-Phase 2: Race. <br />
+* Phase 1: Drone scans and captures images of racing field. <br />
+* Image Processing: Filter images to isolate race track and produce trajectory poses. <br />
+* Phase 2: Race. <br />
 
 #### Video of Final Run
 
